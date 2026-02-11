@@ -10,7 +10,7 @@ use Nfse\Http\Client\SefinClient;
 
 class NfseService
 {
-    private const LISTAR_MAX_PAGINAS = 200;
+    private const LISTAR_MAX_PAGINAS = 1000;
     private const LISTAR_TAMANHO_LOTE = 100;
 
     protected function criarContexto(array $empresa): NfseContext
@@ -74,13 +74,19 @@ class NfseService
             $maiorNsu = null;
             $listaNsu = [];
             $deveBuscarMaisRecentes = $ultimoNsu === 0;
+            $pulouParaFim = false;
 
             do {
                 $paginasLidas++;
                 $resp = $service->baixarDfe($cursorAtual);
                 $loteAtual = $resp->listaNsu ?? [];
                 $listaNsu = array_merge($listaNsu, $loteAtual);
-                $maiorNsu = $resp->maiorNsu ?? $maiorNsu;
+
+                $maiorNsuResposta = (int) ($resp->maiorNsu ?? 0);
+                if ($maiorNsuResposta > 0) {
+                    $maiorNsuAtual = (int) ($maiorNsu ?? 0);
+                    $maiorNsu = max($maiorNsuAtual, $maiorNsuResposta);
+                }
 
                 $ultimoNsuLote = $resp->ultimoNsu;
                 if (empty($ultimoNsuLote)) {
@@ -88,7 +94,7 @@ class NfseService
                 }
 
                 if (!empty($ultimoNsuLote)) {
-                    $ultimoNsuProcessado = (int) $ultimoNsuLote;
+                    $ultimoNsuProcessado = max($ultimoNsuProcessado, (int) $ultimoNsuLote);
                 }
 
                 if (
@@ -99,35 +105,34 @@ class NfseService
                 ) {
                     $cursorAtual = max(0, (int) $maiorNsu - (self::LISTAR_TAMANHO_LOTE - 1));
                     $listaNsu = [];
+                    $pulouParaFim = true;
                     continue;
-                }
-
-                if (!$deveBuscarMaisRecentes) {
-                    break;
                 }
 
                 if (empty($loteAtual)) {
                     break;
                 }
 
-                if (!empty($maiorNsu) && $ultimoNsuProcessado >= (int) $maiorNsu) {
+                $proximoCursor = $ultimoNsuProcessado + 1;
+                if ($proximoCursor <= $cursorAtual) {
                     break;
                 }
 
-                if ($ultimoNsuProcessado <= $cursorAtual) {
-                    break;
-                }
-
-                $cursorAtual = $ultimoNsuProcessado;
+                $cursorAtual = $proximoCursor;
             } while ($paginasLidas < self::LISTAR_MAX_PAGINAS);
 
             $listaNsu = $this->deduplicarEOrdenarPorNsuDesc($listaNsu);
+            $atingiuLimitePaginas = $paginasLidas >= self::LISTAR_MAX_PAGINAS;
 
             return [
                 'success' => true,
                 'data' => [
                     'ultNSU' => $ultimoNsuProcessado,
                     'maxNSU' => $maiorNsu ?? $ultimoNsuProcessado,
+                    'nextNSU' => $ultimoNsuProcessado + 1,
+                    'hasMore' => $atingiuLimitePaginas,
+                    'pagesRead' => $paginasLidas,
+                    'jumpedToEnd' => $pulouParaFim,
                     'list' => $listaNsu,
                 ]
             ];
