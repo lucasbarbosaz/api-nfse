@@ -10,6 +10,9 @@ use Nfse\Http\Client\SefinClient;
 
 class NfseService
 {
+    private const LISTAR_MAX_PAGINAS = 200;
+    private const LISTAR_TAMANHO_LOTE = 100;
+
     protected function criarContexto(array $empresa): NfseContext
     {
         return new NfseContext(
@@ -65,14 +68,67 @@ class NfseService
             $nfse = new Nfse($context);
             $service = $nfse->contribuinte();
 
-            $resp = $service->baixarDfe($ultimoNsu);
+            $cursorAtual = max(0, $ultimoNsu);
+            $paginasLidas = 0;
+            $ultimoNsuProcessado = $cursorAtual;
+            $maiorNsu = null;
+            $listaNsu = [];
+            $deveBuscarMaisRecentes = $ultimoNsu === 0;
+
+            do {
+                $paginasLidas++;
+                $resp = $service->baixarDfe($cursorAtual);
+                $loteAtual = $resp->listaNsu ?? [];
+                $listaNsu = array_merge($listaNsu, $loteAtual);
+                $maiorNsu = $resp->maiorNsu ?? $maiorNsu;
+
+                $ultimoNsuLote = $resp->ultimoNsu;
+                if (empty($ultimoNsuLote)) {
+                    $ultimoNsuLote = $this->obterMaiorNsuLote($loteAtual);
+                }
+
+                if (!empty($ultimoNsuLote)) {
+                    $ultimoNsuProcessado = (int) $ultimoNsuLote;
+                }
+
+                if (
+                    $deveBuscarMaisRecentes
+                    && $paginasLidas === 1
+                    && !empty($maiorNsu)
+                    && (int) $maiorNsu > $ultimoNsuProcessado
+                ) {
+                    $cursorAtual = max(0, (int) $maiorNsu - (self::LISTAR_TAMANHO_LOTE - 1));
+                    $listaNsu = [];
+                    continue;
+                }
+
+                if (!$deveBuscarMaisRecentes) {
+                    break;
+                }
+
+                if (empty($loteAtual)) {
+                    break;
+                }
+
+                if (!empty($maiorNsu) && $ultimoNsuProcessado >= (int) $maiorNsu) {
+                    break;
+                }
+
+                if ($ultimoNsuProcessado <= $cursorAtual) {
+                    break;
+                }
+
+                $cursorAtual = $ultimoNsuProcessado;
+            } while ($paginasLidas < self::LISTAR_MAX_PAGINAS);
+
+            $listaNsu = $this->deduplicarEOrdenarPorNsuDesc($listaNsu);
 
             return [
                 'success' => true,
                 'data' => [
-                    'ultNSU' => $resp->ultimoNsu,
-                    'maxNSU' => $resp->maiorNsu,
-                    'list' => $resp->listaNsu,
+                    'ultNSU' => $ultimoNsuProcessado,
+                    'maxNSU' => $maiorNsu ?? $ultimoNsuProcessado,
+                    'list' => $listaNsu,
                 ]
             ];
         } catch (Exception $e) {
@@ -81,6 +137,41 @@ class NfseService
                 'error' => $e->getMessage(),
             ];
         }
+    }
+
+    private function obterMaiorNsuLote(array $listaNsu): ?int
+    {
+        $nsus = array_map(
+            fn ($item) => (int) ($item->nsu ?? 0),
+            $listaNsu
+        );
+
+        $nsus = array_values(array_filter($nsus, fn (int $nsu) => $nsu > 0));
+        if (empty($nsus)) {
+            return null;
+        }
+
+        return max($nsus);
+    }
+
+    private function deduplicarEOrdenarPorNsuDesc(array $listaNsu): array
+    {
+        $porNsu = [];
+
+        foreach ($listaNsu as $item) {
+            $nsu = (int) ($item->nsu ?? 0);
+            $chave = $nsu > 0 ? (string) $nsu : (string) spl_object_id($item);
+            $porNsu[$chave] = $item;
+        }
+
+        $resultado = array_values($porNsu);
+
+        usort(
+            $resultado,
+            fn ($a, $b) => ((int) ($b->nsu ?? 0)) <=> ((int) ($a->nsu ?? 0))
+        );
+
+        return $resultado;
     }
 
     public function xml(array $empresa, string $chave): string
