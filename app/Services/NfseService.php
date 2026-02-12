@@ -10,8 +10,10 @@ use Nfse\Http\Client\SefinClient;
 
 class NfseService
 {
-    private const LISTAR_MAX_PAGINAS = 1000;
+    private const LISTAR_MAX_PAGINAS_INICIAL = 4;
+    private const LISTAR_MAX_PAGINAS_CONTINUACAO = 6;
     private const LISTAR_TAMANHO_LOTE = 100;
+    private const LISTAR_INTERVALO_ENTRE_PAGINAS_US = 250000;
 
     protected function criarContexto(array $empresa): NfseContext
     {
@@ -74,6 +76,9 @@ class NfseService
             $maiorNsu = null;
             $listaNsu = [];
             $deveBuscarMaisRecentes = $ultimoNsu === 0;
+            $maxPaginas = $deveBuscarMaisRecentes
+                ? self::LISTAR_MAX_PAGINAS_INICIAL
+                : self::LISTAR_MAX_PAGINAS_CONTINUACAO;
             $pulouParaFim = false;
 
             do {
@@ -113,16 +118,25 @@ class NfseService
                     break;
                 }
 
+                if (!empty($maiorNsu) && $ultimoNsuProcessado >= (int) $maiorNsu) {
+                    break;
+                }
+
                 $proximoCursor = $ultimoNsuProcessado + 1;
                 if ($proximoCursor <= $cursorAtual) {
                     break;
                 }
 
                 $cursorAtual = $proximoCursor;
-            } while ($paginasLidas < self::LISTAR_MAX_PAGINAS);
+
+                if ($paginasLidas < $maxPaginas) {
+                    usleep(self::LISTAR_INTERVALO_ENTRE_PAGINAS_US);
+                }
+            } while ($paginasLidas < $maxPaginas);
 
             $listaNsu = $this->deduplicarEOrdenarPorNsuDesc($listaNsu);
-            $atingiuLimitePaginas = $paginasLidas >= self::LISTAR_MAX_PAGINAS;
+            $atingiuLimitePaginas = $paginasLidas >= $maxPaginas;
+            $existeMaisNsu = !empty($maiorNsu) && $ultimoNsuProcessado < (int) $maiorNsu;
 
             return [
                 'success' => true,
@@ -130,16 +144,28 @@ class NfseService
                     'ultNSU' => $ultimoNsuProcessado,
                     'maxNSU' => $maiorNsu ?? $ultimoNsuProcessado,
                     'nextNSU' => $ultimoNsuProcessado + 1,
-                    'hasMore' => $atingiuLimitePaginas,
+                    'hasMore' => $atingiuLimitePaginas || $existeMaisNsu,
                     'pagesRead' => $paginasLidas,
                     'jumpedToEnd' => $pulouParaFim,
                     'list' => $listaNsu,
                 ]
             ];
         } catch (Exception $e) {
+            $mensagem = $e->getMessage();
+            $codigo = (int) $e->getCode();
+            $rateLimited = $codigo === 429 || str_contains($mensagem, '429');
+
+            if ($rateLimited) {
+                return [
+                    'success' => false,
+                    'error' => 'API NFS-e retornou 429 (limite de requisicoes). Aguarde 60 segundos e tente novamente com o ultimo_nsu retornado anteriormente.',
+                    'retry_after_seconds' => 60,
+                ];
+            }
+
             return [
                 'success' => false,
-                'error' => $e->getMessage(),
+                'error' => $mensagem,
             ];
         }
     }
