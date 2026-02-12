@@ -325,6 +325,7 @@ class NfseService
         try {
             $context = $this->criarContexto($empresa);
             $service = (new Nfse($context))->contribuinte();
+            $motivo = trim((string) $motivo);
 
             if (in_array($codigoEvento, ['1', '2', '101101'])) {
                 $codigoEvento = '101101';
@@ -347,11 +348,11 @@ class NfseService
                     break;
                 case '105103': // Operação não Realizada
                     if (empty($motivo)) throw new Exception("Justificativa obrigatória para este evento.");
-                    $detalheXml = "<{$tagEvento}><descEvento>Operacao nao Realizada</descEvento><xJust>{$motivo}</xJust></{$tagEvento}>";
+                    $detalheXml = "<{$tagEvento}><descEvento>Operacao nao Realizada</descEvento><xJust>" . htmlspecialchars($motivo, ENT_XML1 | ENT_QUOTES, 'UTF-8') . "</xJust></{$tagEvento}>";
                     break;
                 case '105104': // Desconhecimento da Operação
                     if (empty($motivo)) throw new Exception("Justificativa obrigatória para este evento.");
-                    $detalheXml = "<{$tagEvento}><descEvento>Desconhecimento da Operacao</descEvento><xJust>{$motivo}</xJust></{$tagEvento}>";
+                    $detalheXml = "<{$tagEvento}><descEvento>Desconhecimento da Operacao</descEvento><xJust>" . htmlspecialchars($motivo, ENT_XML1 | ENT_QUOTES, 'UTF-8') . "</xJust></{$tagEvento}>";
                     break;
                 default:
                     throw new Exception("Código de evento não suportado: $codigoEvento");

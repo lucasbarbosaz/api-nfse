@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use App\Services\NfseService;
+use Illuminate\Validation\ValidationException;
 
 class NfseController extends Controller
 {
@@ -96,16 +97,23 @@ class NfseController extends Controller
             'empresa.cert_base64' => 'required|string',
             'empresa.cert_senha' => 'required|string',
             'codigo' => 'required|string', // Ex: "1"
-            'motivo' => 'required|string',
+            'motivo' => 'nullable|string',
         ]);
 
         $empresa = $data['empresa'];
+        $motivo = trim((string) ($data['motivo'] ?? ''));
+
+        if (in_array((string) $data['codigo'], ['105103', '105104'], true) && $motivo === '') {
+            throw ValidationException::withMessages([
+                'motivo' => ['The motivo field is required.'],
+            ]);
+        }
 
         $resultado = $this->service->manifestar(
             $empresa,
             $chave,
             $data['codigo'],
-            $data['motivo']
+            $motivo
         );
 
         if (!$resultado['success']) {
