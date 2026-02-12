@@ -26,12 +26,14 @@ class NfseController extends Controller
             'empresa.cert_base64' => 'required|string',
             'empresa.cert_senha' => 'required|string',
             'ultimo_nsu' => 'nullable|integer',
+            'reset_cursor' => 'nullable|boolean',
         ]);
 
         $empresa = $data['empresa'];
         $ultimoNsu = $data['ultimo_nsu'] ?? 0;
+        $resetCursor = (bool) ($data['reset_cursor'] ?? false);
 
-        $resultado = $this->service->listar($empresa, $ultimoNsu);
+        $resultado = $this->service->listar($empresa, $ultimoNsu, $resetCursor);
 
         if (!$resultado['success']) {
             return response()->json($resultado, 400);

@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use Exception;
+use Illuminate\Support\Facades\Cache;
 use Nfse\Nfse;
 use Nfse\Http\NfseContext;
 use Nfse\Enums\TipoAmbiente;
@@ -14,6 +15,7 @@ class NfseService
     private const LISTAR_MAX_PAGINAS_CONTINUACAO = 6;
     private const LISTAR_TAMANHO_LOTE = 100;
     private const LISTAR_INTERVALO_ENTRE_PAGINAS_US = 250000;
+    private const LISTAR_CURSOR_CACHE_DIAS = 30;
 
     protected function criarContexto(array $empresa): NfseContext
     {
@@ -63,19 +65,35 @@ class NfseService
         return $path;
     }
 
-    public function listar(array $empresa, int $ultimoNsu = 0): array
+    public function listar(array $empresa, int $ultimoNsu = 0, bool $resetCursor = false): array
     {
         try {
             $context = $this->criarContexto($empresa);
             $nfse = new Nfse($context);
             $service = $nfse->contribuinte();
 
-            $cursorAtual = max(0, $ultimoNsu);
+            $chaveCursor = $this->obterChaveCursor($empresa);
+            if ($resetCursor) {
+                Cache::forget($chaveCursor);
+            }
+
+            $cursorInformado = max(0, $ultimoNsu);
+            $cursorCache = max(0, (int) Cache::get($chaveCursor, 0));
+
+            if ($cursorInformado > 0) {
+                $cursorAtual = $cursorInformado;
+                $origemCursor = 'request';
+            } else {
+                $cursorAtual = $cursorCache;
+                $origemCursor = $cursorCache > 0 ? 'cache' : 'request';
+            }
+
             $paginasLidas = 0;
             $ultimoNsuProcessado = $cursorAtual;
             $maiorNsu = null;
             $listaNsu = [];
-            $deveBuscarMaisRecentes = $ultimoNsu === 0;
+            $eventosIgnorados = 0;
+            $deveBuscarMaisRecentes = $cursorAtual === 0;
             $maxPaginas = $deveBuscarMaisRecentes
                 ? self::LISTAR_MAX_PAGINAS_INICIAL
                 : self::LISTAR_MAX_PAGINAS_CONTINUACAO;
@@ -85,7 +103,9 @@ class NfseService
                 $paginasLidas++;
                 $resp = $service->baixarDfe($cursorAtual);
                 $loteAtual = $resp->listaNsu ?? [];
-                $listaNsu = array_merge($listaNsu, $loteAtual);
+                $loteSemEventos = $this->removerEventos($loteAtual);
+                $eventosIgnorados += count($loteAtual) - count($loteSemEventos);
+                $listaNsu = array_merge($listaNsu, $loteSemEventos);
 
                 $maiorNsuResposta = (int) ($resp->maiorNsu ?? 0);
                 if ($maiorNsuResposta > 0) {
@@ -100,6 +120,11 @@ class NfseService
 
                 if (!empty($ultimoNsuLote)) {
                     $ultimoNsuProcessado = max($ultimoNsuProcessado, (int) $ultimoNsuLote);
+                    Cache::put(
+                        $chaveCursor,
+                        $ultimoNsuProcessado + 1,
+                        now()->addDays(self::LISTAR_CURSOR_CACHE_DIAS)
+                    );
                 }
 
                 if (
@@ -141,12 +166,15 @@ class NfseService
             return [
                 'success' => true,
                 'data' => [
+                    'cursorSource' => $origemCursor,
+                    'cursorUsed' => $cursorAtual,
                     'ultNSU' => $ultimoNsuProcessado,
                     'maxNSU' => $maiorNsu ?? $ultimoNsuProcessado,
                     'nextNSU' => $ultimoNsuProcessado + 1,
                     'hasMore' => $atingiuLimitePaginas || $existeMaisNsu,
                     'pagesRead' => $paginasLidas,
                     'jumpedToEnd' => $pulouParaFim,
+                    'ignoredEventDocs' => $eventosIgnorados,
                     'list' => $listaNsu,
                 ]
             ];
@@ -168,6 +196,49 @@ class NfseService
                 'error' => $mensagem,
             ];
         }
+    }
+
+    private function obterChaveCursor(array $empresa): string
+    {
+        $ambiente = $empresa['ambiente'] ?? 'prod';
+        $cnpj = preg_replace('/\D+/', '', $empresa['cnpj'] ?? '');
+
+        return "nfse:listar:cursor:{$ambiente}:{$cnpj}";
+    }
+
+    private function removerEventos(array $itens): array
+    {
+        return array_values(array_filter(
+            $itens,
+            fn ($item) => !$this->ehEventoXml($item->dfeXmlGZipB64 ?? null)
+        ));
+    }
+
+    private function ehEventoXml(mixed $xmlZipBase64): bool
+    {
+        if (!is_string($xmlZipBase64) || $xmlZipBase64 === '') {
+            return false;
+        }
+
+        $gzip = base64_decode($xmlZipBase64, true);
+        if ($gzip === false) {
+            return false;
+        }
+
+        $xml = @gzdecode($gzip);
+        if ($xml === false || $xml === '') {
+            return false;
+        }
+
+        if (!preg_match('/<\s*([a-zA-Z_][a-zA-Z0-9_:\-\.]*)\b/', $xml, $matches)) {
+            return false;
+        }
+
+        $nomeTag = strtolower($matches[1]);
+        $partes = explode(':', $nomeTag);
+        $raiz = end($partes);
+
+        return $raiz === 'evento';
     }
 
     private function obterMaiorNsuLote(array $listaNsu): ?int
