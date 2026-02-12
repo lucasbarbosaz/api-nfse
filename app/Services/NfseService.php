@@ -344,10 +344,9 @@ class NfseService
 
             $sequencialEvento = 1;
             $sequencialEventoXml = (string) $sequencialEvento;
-            $sequencialEventoId = str_pad($sequencialEventoXml, 3, '0', STR_PAD_LEFT);
-
-            // Regra oficial: PRE + chave(50) + tipoEvento(6) + nPedRegEvento(3)
-            $id = "PRE{$chave}{$codigoEvento}{$sequencialEventoId}";
+            // Em producao da SEFIN Nacional, o Id aceito segue PRE + chave(50) + tipoEvento(6).
+            // O sequencial permanece apenas no campo nPedRegEvento.
+            $id = "PRE{$chave}{$codigoEvento}";
             $dhEvento = date('Y-m-d\TH:i:sP');
             $tpAmb = $context->ambiente->value;
             $verAplic = '1.0.0';
