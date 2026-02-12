@@ -340,7 +340,7 @@ class NfseService
                 throw new Exception('CNPJ do autor invalido para manifestacao.');
             }
 
-            $detalheXml = $this->montarDetalheEventoManifestacao($codigoOriginal, $codigoEvento, $motivo);
+            $detalhesXml = $this->montarDetalhesEventoManifestacao($codigoOriginal, $codigoEvento, $motivo);
             // Em producao da SEFIN Nacional, o Id aceito segue PRE + chave(50) + tipoEvento(6).
             // O elemento nPedRegEvento nao e aceito no infPedReg pelo validador da SEFIN.
             $id = "PRE{$chave}{$codigoEvento}";
@@ -348,7 +348,14 @@ class NfseService
             $tpAmb = $context->ambiente->value;
             $verAplic = '1.0.0';
 
-            $xmlRef = <<<XML
+            $cert = new \Nfse\Signer\Certificate($context->certificatePath, $context->certificatePassword);
+            $signer = new \Nfse\Signer\XmlSigner($cert);
+            $totalDetalhes = count($detalhesXml);
+            $ultimoErro = null;
+
+            foreach ($detalhesXml as $indiceDetalhe => $detalheXml) {
+                try {
+                    $xmlRef = <<<XML
 <pedRegEvento versao="1.01" xmlns="http://www.sped.fazenda.gov.br/nfse">
 <infPedReg Id="{$id}">
 <tpAmb>{$tpAmb}</tpAmb>
@@ -361,19 +368,30 @@ class NfseService
 </pedRegEvento>
 XML;
 
-            $xmlString = str_replace(["\n", "\r", "\t"], '', $xmlRef);
+                    $xmlString = str_replace(["\n", "\r", "\t"], '', $xmlRef);
+                    $signedXml = $signer->sign($xmlString, 'infPedReg');
+                    $payload = base64_encode(gzencode($signedXml));
+                    $resp = $service->registrarEvento($chave, $payload);
 
-            $cert = new \Nfse\Signer\Certificate($context->certificatePath, $context->certificatePassword);
-            $signer = new \Nfse\Signer\XmlSigner($cert);
-            $signedXml = $signer->sign($xmlString, 'infPedReg');
+                    return [
+                        'success' => true,
+                        'data' => $resp,
+                    ];
+                } catch (Exception $e) {
+                    $ultimoErro = $e;
+                    $possuiNovaTentativa = ($indiceDetalhe + 1) < $totalDetalhes;
 
-            $payload = base64_encode(gzencode($signedXml));
-            $resp = $service->registrarEvento($chave, $payload);
+                    if (!$possuiNovaTentativa || !$this->deveTentarOutroXDesc($e->getMessage())) {
+                        throw $e;
+                    }
+                }
+            }
 
-            return [
-                'success' => true,
-                'data' => $resp,
-            ];
+            if ($ultimoErro instanceof Exception) {
+                throw $ultimoErro;
+            }
+
+            throw new Exception('Falha ao registrar evento de manifestacao.');
         } catch (Exception $e) {
             return [
                 'success' => false,
@@ -393,7 +411,7 @@ XML;
         };
     }
 
-    private function montarDetalheEventoManifestacao(string $codigoOriginal, string $codigoEvento, string $motivo): string
+    private function montarDetalhesEventoManifestacao(string $codigoOriginal, string $codigoEvento, string $motivo): array
     {
         switch ($codigoEvento) {
             case '101101':
@@ -407,10 +425,15 @@ XML;
                 }
                 $motivoCancelamento = htmlspecialchars($motivoCancelamento, ENT_XML1 | ENT_QUOTES, 'UTF-8');
 
-                return "<e101101><xDesc>Cancelamento de NFS-e</xDesc><cMotivo>{$codigoMotivo}</cMotivo><xMotivo>{$motivoCancelamento}</xMotivo></e101101>";
+                return ["<e101101><xDesc>Cancelamento de NFS-e</xDesc><cMotivo>{$codigoMotivo}</cMotivo><xMotivo>{$motivoCancelamento}</xMotivo></e101101>"];
 
             case '203202':
-                return '<e203202><xDesc>Confirma&#xE7;&#xE3;o do Tomador</xDesc></e203202>';
+                return [
+                    '<e203202><xDesc>Manifesta&#xE7;&#xE3;o de NFS-e - Confirma&#xE7;&#xE3;o do Tomador</xDesc></e203202>',
+                    '<e203202><xDesc>Confirma&#xE7;&#xE3;o do Tomador</xDesc></e203202>',
+                    '<e203202><xDesc>Manifestacao de NFS-e - Confirmacao do Tomador</xDesc></e203202>',
+                    '<e203202><xDesc>Confirmacao do Tomador</xDesc></e203202>',
+                ];
 
             case '203206':
                 if (in_array($codigoOriginal, ['105103', '105104'], true) && $motivo === '') {
@@ -429,11 +452,22 @@ XML;
                 }
                 $motivoRejeicao = htmlspecialchars($motivoRejeicao, ENT_XML1 | ENT_QUOTES, 'UTF-8');
 
-                return "<e203206><xDesc>Rejei&#xE7;&#xE3;o do Tomador</xDesc><infRej><cMotivo>{$codigoMotivo}</cMotivo><xMotivo>{$motivoRejeicao}</xMotivo></infRej></e203206>";
+                return [
+                    "<e203206><xDesc>Manifesta&#xE7;&#xE3;o de NFS-e - Rejei&#xE7;&#xE3;o do Tomador</xDesc><infRej><cMotivo>{$codigoMotivo}</cMotivo><xMotivo>{$motivoRejeicao}</xMotivo></infRej></e203206>",
+                    "<e203206><xDesc>Rejei&#xE7;&#xE3;o do Tomador</xDesc><infRej><cMotivo>{$codigoMotivo}</cMotivo><xMotivo>{$motivoRejeicao}</xMotivo></infRej></e203206>",
+                    "<e203206><xDesc>Manifestacao de NFS-e - Rejeicao do Tomador</xDesc><infRej><cMotivo>{$codigoMotivo}</cMotivo><xMotivo>{$motivoRejeicao}</xMotivo></infRej></e203206>",
+                    "<e203206><xDesc>Rejeicao do Tomador</xDesc><infRej><cMotivo>{$codigoMotivo}</cMotivo><xMotivo>{$motivoRejeicao}</xMotivo></infRej></e203206>",
+                ];
 
             default:
                 throw new Exception("Codigo de evento nao suportado: {$codigoOriginal}");
         }
+    }
+
+    private function deveTentarOutroXDesc(string $mensagemErro): bool
+    {
+        return str_contains($mensagemErro, 'xDesc')
+            && str_contains($mensagemErro, 'Enumeration constraint failed');
     }
 
     private function tamanhoTexto(string $texto): int
