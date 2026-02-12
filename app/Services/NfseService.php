@@ -341,11 +341,8 @@ class NfseService
             }
 
             $detalheXml = $this->montarDetalheEventoManifestacao($codigoOriginal, $codigoEvento, $motivo);
-
-            $sequencialEvento = 1;
-            $sequencialEventoXml = (string) $sequencialEvento;
             // Em producao da SEFIN Nacional, o Id aceito segue PRE + chave(50) + tipoEvento(6).
-            // O sequencial permanece apenas no campo nPedRegEvento.
+            // O elemento nPedRegEvento nao e aceito no infPedReg pelo validador da SEFIN.
             $id = "PRE{$chave}{$codigoEvento}";
             $dhEvento = date('Y-m-d\TH:i:sP');
             $tpAmb = $context->ambiente->value;
@@ -359,7 +356,6 @@ class NfseService
 <dhEvento>{$dhEvento}</dhEvento>
 <CNPJAutor>{$cnpjAutor}</CNPJAutor>
 <chNFSe>{$chave}</chNFSe>
-<nPedRegEvento>{$sequencialEventoXml}</nPedRegEvento>
 {$detalheXml}
 </infPedReg>
 </pedRegEvento>
