@@ -88,6 +88,7 @@ class NfseService
                 $origemCursor = $cursorCache > 0 ? 'cache' : 'request';
             }
 
+            $cnpjConsulta = preg_replace('/\D+/', '', $empresa['cnpj'] ?? '');
             $paginasLidas = 0;
             $ultimoNsuProcessado = $cursorAtual;
             $maiorNsu = null;
@@ -101,7 +102,7 @@ class NfseService
 
             do {
                 $paginasLidas++;
-                $resp = $service->baixarDfe($cursorAtual);
+                $resp = $service->baixarDfe($cursorAtual, $cnpjConsulta ?: null);
                 $loteAtual = $resp->listaNsu ?? [];
                 $loteSemEventos = $this->removerEventos($loteAtual);
                 $eventosIgnorados += count($loteAtual) - count($loteSemEventos);
@@ -166,6 +167,7 @@ class NfseService
             return [
                 'success' => true,
                 'data' => [
+                    'cnpjConsulta' => $cnpjConsulta,
                     'cursorSource' => $origemCursor,
                     'cursorUsed' => $cursorAtual,
                     'ultNSU' => $ultimoNsuProcessado,
