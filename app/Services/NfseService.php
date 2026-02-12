@@ -327,64 +327,51 @@ class NfseService
             $service = (new Nfse($context))->contribuinte();
             $motivo = trim((string) $motivo);
 
-            if (in_array($codigoEvento, ['1', '2', '101101'])) {
-                $codigoEvento = '101101';
+            $codigoOriginal = preg_replace('/\D+/', '', (string) $codigoEvento);
+            $codigoEvento = $this->normalizarCodigoEventoManifestacao($codigoOriginal);
+
+            $chave = preg_replace('/\D+/', '', $chave);
+            if (strlen($chave) !== 50) {
+                throw new Exception('Chave NFSe invalida para manifestacao.');
             }
 
-            $detalheXml = '';
-            $tagEvento = "e{$codigoEvento}";
-
-            // Tratamento por tipo de evento
-            switch ($codigoEvento) {
-                case '101101': // Cancelamento
-                    $codMotivo = in_array($motivo, ['1', '2']) ? $motivo : '1';
-                    $detalheXml = "<{$tagEvento}><codigoMotivo>{$codMotivo}</codigoMotivo><motivo>Cancelamento solicitado</motivo><descricao>Cancelamento via API</descricao></{$tagEvento}>";
-                    break;
-                case '105101': // Ciência da Emissão
-                    $detalheXml = "<{$tagEvento}><descEvento>Ciencia da Emissao</descEvento></{$tagEvento}>";
-                    break;
-                case '105102': // Confirmação da Prestação
-                    $detalheXml = "<{$tagEvento}><descEvento>Confirmacao da Prestacao</descEvento></{$tagEvento}>";
-                    break;
-                case '105103': // Operação não Realizada
-                    if (empty($motivo)) throw new Exception("Justificativa obrigatória para este evento.");
-                    $detalheXml = "<{$tagEvento}><descEvento>Operacao nao Realizada</descEvento><xJust>" . htmlspecialchars($motivo, ENT_XML1 | ENT_QUOTES, 'UTF-8') . "</xJust></{$tagEvento}>";
-                    break;
-                case '105104': // Desconhecimento da Operação
-                    if (empty($motivo)) throw new Exception("Justificativa obrigatória para este evento.");
-                    $detalheXml = "<{$tagEvento}><descEvento>Desconhecimento da Operacao</descEvento><xJust>" . htmlspecialchars($motivo, ENT_XML1 | ENT_QUOTES, 'UTF-8') . "</xJust></{$tagEvento}>";
-                    break;
-                default:
-                    throw new Exception("Código de evento não suportado: $codigoEvento");
+            $cnpjAutor = preg_replace('/\D+/', '', (string) ($empresa['cnpj'] ?? ''));
+            if (strlen($cnpjAutor) !== 14) {
+                throw new Exception('CNPJ do autor invalido para manifestacao.');
             }
 
-            $id = "ID" . $codigoEvento . $chave . "01";
+            $detalheXml = $this->montarDetalheEventoManifestacao($codigoOriginal, $codigoEvento, $motivo);
+
+            $sequencialEvento = 1;
+            $sequencialEventoXml = (string) $sequencialEvento;
+            $sequencialEventoId = str_pad($sequencialEventoXml, 3, '0', STR_PAD_LEFT);
+
+            // Regra oficial: PRE + chave(50) + tipoEvento(6) + nPedRegEvento(3)
+            $id = "PRE{$chave}{$codigoEvento}{$sequencialEventoId}";
             $dhEvento = date('Y-m-d\TH:i:sP');
             $tpAmb = $context->ambiente->value;
-            $verAplic = "1.0.0";
-            $cnpjAutor = $empresa['cnpj'];
+            $verAplic = '1.0.0';
 
             $xmlRef = <<<XML
-<pedRegEvento versao="1.00" xmlns="http://www.sped.fazenda.gov.br/nfse">
+<pedRegEvento versao="1.01" xmlns="http://www.sped.fazenda.gov.br/nfse">
 <infPedReg Id="{$id}">
 <tpAmb>{$tpAmb}</tpAmb>
 <verAplic>{$verAplic}</verAplic>
 <dhEvento>{$dhEvento}</dhEvento>
-<chNFSe>{$chave}</chNFSe>
 <CNPJAutor>{$cnpjAutor}</CNPJAutor>
-<nPedRegEvento>1</nPedRegEvento>
+<chNFSe>{$chave}</chNFSe>
+<nPedRegEvento>{$sequencialEventoXml}</nPedRegEvento>
 {$detalheXml}
 </infPedReg>
 </pedRegEvento>
 XML;
 
-            $xmlString = str_replace(["\n", "\r", "\t"], "", $xmlRef);
+            $xmlString = str_replace(["\n", "\r", "\t"], '', $xmlRef);
 
             $cert = new \Nfse\Signer\Certificate($context->certificatePath, $context->certificatePassword);
             $signer = new \Nfse\Signer\XmlSigner($cert);
             $signedXml = $signer->sign($xmlString, 'infPedReg');
 
-            // Envio
             $payload = base64_encode(gzencode($signedXml));
             $resp = $service->registrarEvento($chave, $payload);
 
@@ -399,4 +386,68 @@ XML;
             ];
         }
     }
+
+    private function normalizarCodigoEventoManifestacao(string $codigoEvento): string
+    {
+        return match ($codigoEvento) {
+            '1', '2', '101101' => '101101',
+            // Compatibilidade com codigos legados da tela de manifestacao.
+            '105101', '105102' => '203202',
+            '105103', '105104' => '203206',
+            default => $codigoEvento,
+        };
+    }
+
+    private function montarDetalheEventoManifestacao(string $codigoOriginal, string $codigoEvento, string $motivo): string
+    {
+        switch ($codigoEvento) {
+            case '101101':
+                $codigoMotivo = in_array($motivo, ['1', '2', '9'], true) ? $motivo : '1';
+                $motivoCancelamento = trim($motivo);
+                if ($motivoCancelamento === '' || in_array($motivoCancelamento, ['1', '2', '9'], true)) {
+                    $motivoCancelamento = 'Cancelamento solicitado via API';
+                }
+                if ($this->tamanhoTexto($motivoCancelamento) < 15) {
+                    $motivoCancelamento = str_pad($motivoCancelamento, 15, '.');
+                }
+                $motivoCancelamento = htmlspecialchars($motivoCancelamento, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+
+                return "<e101101><xDesc>Cancelamento de NFS-e</xDesc><cMotivo>{$codigoMotivo}</cMotivo><xMotivo>{$motivoCancelamento}</xMotivo></e101101>";
+
+            case '203202':
+                return '<e203202><xDesc>Confirma&#xE7;&#xE3;o do Tomador</xDesc></e203202>';
+
+            case '203206':
+                if (in_array($codigoOriginal, ['105103', '105104'], true) && $motivo === '') {
+                    throw new Exception('Justificativa obrigatoria para este evento.');
+                }
+
+                $codigoMotivo = match ($codigoOriginal) {
+                    '105103' => '3', // Nao ocorrencia do fato gerador
+                    '105104' => '9', // Outros (desconhecimento)
+                    default => '9',
+                };
+
+                $motivoRejeicao = $motivo !== '' ? $motivo : 'Manifestacao de rejeicao registrada via API';
+                if ($this->tamanhoTexto($motivoRejeicao) < 15) {
+                    throw new Exception('Justificativa deve conter no minimo 15 caracteres.');
+                }
+                $motivoRejeicao = htmlspecialchars($motivoRejeicao, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+
+                return "<e203206><xDesc>Rejei&#xE7;&#xE3;o do Tomador</xDesc><infRej><cMotivo>{$codigoMotivo}</cMotivo><xMotivo>{$motivoRejeicao}</xMotivo></infRej></e203206>";
+
+            default:
+                throw new Exception("Codigo de evento nao suportado: {$codigoOriginal}");
+        }
+    }
+
+    private function tamanhoTexto(string $texto): int
+    {
+        if (function_exists('mb_strlen')) {
+            return mb_strlen($texto, 'UTF-8');
+        }
+
+        return strlen($texto);
+    }
 }
+

@@ -103,16 +103,28 @@ class NfseController extends Controller
         $empresa = $data['empresa'];
         $motivo = trim((string) ($data['motivo'] ?? ''));
 
-        if (in_array((string) $data['codigo'], ['105103', '105104'], true) && $motivo === '') {
+        $codigo = preg_replace('/\D+/', '', (string) $data['codigo']);
+        $codigoExigeMotivo = in_array($codigo, ['105103', '105104', '203206'], true);
+
+        if ($codigoExigeMotivo && $motivo === '') {
             throw ValidationException::withMessages([
                 'motivo' => ['The motivo field is required.'],
             ]);
         }
 
+        if ($codigoExigeMotivo && $motivo !== '') {
+            $len = function_exists('mb_strlen') ? mb_strlen($motivo, 'UTF-8') : strlen($motivo);
+            if ($len < 15) {
+                throw ValidationException::withMessages([
+                    'motivo' => ['The motivo field must be at least 15 characters.'],
+                ]);
+            }
+        }
+
         $resultado = $this->service->manifestar(
             $empresa,
             $chave,
-            $data['codigo'],
+            $codigo,
             $motivo
         );
 
