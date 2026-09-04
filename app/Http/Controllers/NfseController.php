@@ -15,6 +15,48 @@ class NfseController extends Controller
         $this->service = $service;
     }
 
+    public function emitir(Request $request)
+    {
+        $data = $request->validate([
+            'empresa.ambiente' => 'required|in:prod,homolog',
+            'empresa.cnpj' => 'required|string',
+            'empresa.im' => 'nullable|string',
+            'empresa.codigo_municipio' => 'required|string',
+            'empresa.opsimpnac' => 'required|in:1,2,3',
+            'empresa.cert_base64' => 'required|string',
+            'empresa.cert_senha' => 'required|string',
+            'tomador.documento' => 'required|string',
+            'tomador.nome' => 'required|string',
+            'tomador.codigo_municipio' => 'nullable|string',
+            'tomador.cep' => 'nullable|string',
+            'tomador.logradouro' => 'nullable|string',
+            'tomador.numero' => 'nullable|string',
+            'tomador.bairro' => 'nullable|string',
+            'servico.codigo_tributacao_nacional' => 'required|string',
+            'servico.codigo_tributacao_municipal' => 'nullable|string',
+            'servico.descricao' => 'required|string',
+            'servico.valor_servico' => 'required|numeric',
+            'servico.aliquota_iss' => 'required|numeric',
+            'servico.iss_retido' => 'nullable|boolean',
+            'serie_dps' => 'required|string',
+            'numero_dps' => 'required|string',
+        ]);
+
+        $resultado = $this->service->emitir(
+            $data['empresa'],
+            $data['tomador'],
+            $data['servico'],
+            $data['serie_dps'],
+            $data['numero_dps']
+        );
+
+        if (!$resultado['success']) {
+            return response()->json($resultado, 400);
+        }
+
+        return response()->json($resultado);
+    }
+
     public function listar(Request $request)
     {
         $data = $request->validate([

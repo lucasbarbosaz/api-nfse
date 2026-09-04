@@ -7,7 +7,26 @@ use Illuminate\Support\Facades\Cache;
 use Nfse\Nfse;
 use Nfse\Http\NfseContext;
 use Nfse\Enums\TipoAmbiente;
+use Nfse\Enums\EmitenteDPS;
+use Nfse\Enums\OpcaoSimplesNacional;
+use Nfse\Enums\RegimeEspecialTributacao;
+use Nfse\Enums\TributacaoIssqn;
+use Nfse\Enums\TipoRetencaoIssqn;
+use Nfse\Enums\IndicadorTotalTributos;
 use Nfse\Http\Client\SefinClient;
+use Nfse\Dto\Nfse\DpsData;
+use Nfse\Dto\Nfse\InfDpsData;
+use Nfse\Dto\Nfse\PrestadorData;
+use Nfse\Dto\Nfse\TomadorData;
+use Nfse\Dto\Nfse\EnderecoData;
+use Nfse\Dto\Nfse\RegimeTributarioData;
+use Nfse\Dto\Nfse\ServicoData;
+use Nfse\Dto\Nfse\LocalPrestacaoData;
+use Nfse\Dto\Nfse\CodigoServicoData;
+use Nfse\Dto\Nfse\ValoresData;
+use Nfse\Dto\Nfse\ValorServicoPrestadoData;
+use Nfse\Dto\Nfse\TributacaoData;
+use Nfse\Support\IdGenerator;
 
 class NfseService
 {
@@ -63,6 +82,120 @@ class NfseService
         }
 
         return $path;
+    }
+
+    /**
+     * Emite uma NFS-e (DPS) pelo Sistema Nacional.
+     *
+     * $empresa é sempre a emitente/prestadora (tpEmit=1) — por isso o
+     * nome/endereço do prestador NUNCA são enviados aqui: a Sefin Nacional
+     * rejeita (E0121/E0128) quando o emitente da DPS é o próprio prestador
+     * e esses campos vem preenchidos.
+     */
+    public function emitir(array $empresa, array $tomador, array $servico, string $serieDps, string $numeroDps): array
+    {
+        try {
+            $context = $this->criarContexto($empresa);
+            $nfse = new Nfse($context);
+            $service = $nfse->contribuinte();
+
+            $cnpjPrestador = preg_replace('/\D+/', '', (string) $empresa['cnpj']);
+            $codigoMunicipioEmpresa = preg_replace('/\D+/', '', (string) $empresa['codigo_municipio']);
+
+            $idDps = IdGenerator::generateDpsId($cnpjPrestador, $codigoMunicipioEmpresa, $serieDps, $numeroDps);
+
+            $prestador = new PrestadorData(
+                cnpj: $cnpjPrestador,
+                inscricaoMunicipal: !empty($empresa['im']) ? (string) $empresa['im'] : null,
+                regimeTributario: new RegimeTributarioData(
+                    opcaoSimplesNacional: OpcaoSimplesNacional::from((string) $empresa['opsimpnac']),
+                    regimeEspecialTributacao: RegimeEspecialTributacao::Nenhum,
+                ),
+            );
+
+            $issRetido = !empty($servico['iss_retido']);
+            $documentoTomador = preg_replace('/\D+/', '', (string) $tomador['documento']);
+
+            $enderecoTomador = null;
+            if ($issRetido) {
+                $numeroTomador = trim((string) ($tomador['numero'] ?? ''));
+                $enderecoTomador = new EnderecoData(
+                    codigoMunicipio: preg_replace('/\D+/', '', (string) $tomador['codigo_municipio']),
+                    cep: preg_replace('/\D+/', '', (string) ($tomador['cep'] ?? '')),
+                    logradouro: (string) ($tomador['logradouro'] ?? ''),
+                    numero: $numeroTomador !== '' ? $numeroTomador : 'S/N',
+                    bairro: (string) ($tomador['bairro'] ?? ''),
+                );
+            }
+
+            $tomadorData = new TomadorData(
+                cnpj: strlen($documentoTomador) === 14 ? $documentoTomador : null,
+                cpf: strlen($documentoTomador) === 11 ? $documentoTomador : null,
+                nome: (string) $tomador['nome'],
+                endereco: $enderecoTomador,
+            );
+
+            $codigoMunicipal = trim((string) ($servico['codigo_tributacao_municipal'] ?? ''));
+
+            $servicoData = new ServicoData(
+                localPrestacao: new LocalPrestacaoData(
+                    codigoLocalPrestacao: $codigoMunicipioEmpresa,
+                ),
+                codigoServico: new CodigoServicoData(
+                    codigoTributacaoNacional: trim((string) $servico['codigo_tributacao_nacional']),
+                    codigoTributacaoMunicipal: $codigoMunicipal !== '' ? $codigoMunicipal : null,
+                    descricaoServico: trim((string) $servico['descricao']),
+                ),
+            );
+
+            $valoresData = new ValoresData(
+                valorServicoPrestado: new ValorServicoPrestadoData(
+                    valorServico: (float) $servico['valor_servico'],
+                ),
+                tributacao: new TributacaoData(
+                    tributacaoIssqn: TributacaoIssqn::OperacaoTributavel,
+                    tipoRetencaoIssqn: $issRetido ? TipoRetencaoIssqn::RetidoTomador : TipoRetencaoIssqn::NaoRetido,
+                    aliquota: (float) $servico['aliquota_iss'],
+                    indicadorTotalTributos: IndicadorTotalTributos::Nenhum,
+                ),
+            );
+
+            $dps = new DpsData(
+                versao: '1.01',
+                infDps: new InfDpsData(
+                    id: $idDps,
+                    tipoAmbiente: $context->ambiente,
+                    dataEmissao: date('c'),
+                    versaoAplicativo: 'ConsolidaERP-1.0',
+                    serie: $serieDps,
+                    numeroDps: $numeroDps,
+                    dataCompetencia: date('Y-m-d'),
+                    tipoEmitente: EmitenteDPS::Prestador,
+                    codigoLocalEmissao: $codigoMunicipioEmpresa,
+                    prestador: $prestador,
+                    tomador: $tomadorData,
+                    servico: $servicoData,
+                    valores: $valoresData,
+                ),
+            );
+
+            $nfseData = $service->emitir($dps);
+
+            return [
+                'success' => true,
+                'data' => [
+                    'idDps' => $idDps,
+                    'chaveAcesso' => $nfseData->infNfse->id ?? null,
+                    'numeroNfse' => $nfseData->infNfse->numeroNfse ?? null,
+                    'nfseXml' => $nfseData->nfseXml,
+                ],
+            ];
+        } catch (Exception $e) {
+            return [
+                'success' => false,
+                'error' => $e->getMessage(),
+            ];
+        }
     }
 
     public function listar(array $empresa, int $ultimoNsu = 0, bool $resetCursor = false): array
